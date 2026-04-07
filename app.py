@@ -66,7 +66,8 @@ html, body, [class*="css"] {
     font-family: 'DM Sans', sans-serif !important;
     background-color: #F0F4FA !important;
 }
-#MainMenu, footer, header { visibility: hidden; }
+#MainMenu, footer, { visibility: hidden; }
+header { background-color: rgba(0,0,0,0) !important; }
 
 /* Sidebar */
 [data-testid="stSidebar"] {
