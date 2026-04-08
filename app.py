@@ -514,30 +514,40 @@ elif menu == "🚗  Vehicles":
 
     with tab1:
         st.markdown("<br>", unsafe_allow_html=True)
-        col1, col2 = st.columns(2)
-        with col1:
-            v_name = st.text_input("Vehicle Name", placeholder="e.g. Toyota Hiace")
-            v_plate = st.text_input("Plate Number", placeholder="e.g. LAG-234-XY")
-        with col2:
-            drivers = session.query(Driver).all()
-            driver_options = {"None": None, **{d.name: d.id for d in drivers}}
-            selected_driver = st.selectbox("Assign Driver (optional)", list(driver_options.keys()))
+        
+        # --- THE FORM ---
+        with st.form("add_vehicle_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                v_name = st.text_input("Vehicle Name", placeholder="e.g. Toyota Hiace")
+                v_plate = st.text_input("Plate Number", placeholder="e.g. LAG-234-XY")
+            with col2:
+                # Refresh drivers list for the dropdown
+                drivers = session.query(Driver).all()
+                driver_options = {"None": None, **{d.name: d.id for d in drivers}}
+                selected_driver = st.selectbox("Assign Driver (optional)", list(driver_options.keys()))
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Add Vehicle"):
-            if v_name.strip():
-                vehicle = Vehicle(
-                    name=v_name.strip(),
-                    plate=v_plate.strip(),
-                    driver_id=driver_options[selected_driver]
-                )
-                session.add(vehicle)
-                session.commit()
-                st.toast(f"✅ {v_name} added to fleet!", icon='🚗')
-                st.balloons()
-                st.rerun()
-            else:
-                st.warning("Please enter a vehicle name.")
+            submitted = st.form_submit_button("Add Vehicle")
+
+            if submitted:
+                if v_name.strip():
+                    vehicle = Vehicle(
+                        name=v_name.strip(),
+                        plate=v_plate.strip(),
+                        driver_id=driver_options[selected_driver]
+                    )
+                    session.add(vehicle)
+                    session.commit()
+                    
+                    st.toast(f"✅ Vehicle {v_name} added to fleet!", icon='🚗')
+                    st.balloons()
+                    
+                    # IMPORTANT: Wait a second for the toast, then rerun to update dropdowns
+                    import time
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.warning("Please enter a vehicle name.")
 
     with tab2:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -575,27 +585,36 @@ elif menu == "👤  Drivers":
 
     with tab1:
         st.markdown("<br>", unsafe_allow_html=True)
-        col1, col2 = st.columns(2)
-        with col1:
-            d_name = st.text_input("Full Name", placeholder="e.g. Emeka Okafor")
-            d_phone = st.text_input("Phone Number", placeholder="e.g. 08012345678")
-        with col2:
-            d_license = st.text_input("License Number", placeholder="e.g. LAG20241234")
+        
+        # --- THE FORM ---
+        with st.form("add_driver_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                d_name = st.text_input("Full Name", placeholder="e.g. Emeka Okafor")
+                d_phone = st.text_input("Phone Number", placeholder="e.g. 08012345678")
+            with col2:
+                d_license = st.text_input("License Number", placeholder="e.g. LAG20241234")
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Add Driver"):
-            if d_name.strip():
-                driver = Driver(
-                    name=d_name.strip(),
-                    phone=d_phone.strip(),
-                    license_number=d_license.strip()
-                )
-                session.add(driver)
-                session.commit()
-                st.success(f"✅ Driver **{d_name}** added successfully!")
-                st.rerun()
-            else:
-                st.warning("Please enter the driver's name.")
+            submitted = st.form_submit_button("Add Driver")
+
+            if submitted:
+                if d_name.strip():
+                    driver = Driver(
+                        name=d_name.strip(),
+                        phone=d_phone.strip(),
+                        license_number=d_license.strip()
+                    )
+                    session.add(driver)
+                    session.commit()
+                    
+                    st.toast(f"✅ Driver {d_name} registered!", icon='👤')
+                    
+                    # IMPORTANT: Rerun so the Vehicle page dropdown sees the new driver
+                    import time
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.warning("Please enter the driver's name.")
 
     with tab2:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -648,39 +667,44 @@ elif menu == "💸  Add Expense":
         st.warning("Add a vehicle first before recording expenses.")
     else:
         st.markdown("<br>", unsafe_allow_html=True)
-        col1, col2 = st.columns(2)
-        with col1:
-            vehicle_name = st.selectbox("Vehicle", list(vehicle_dict.keys()))
-            amount = st.number_input("Amount (₦)", min_value=0.0, step=500.0,
-                                     format="%.2f")
-            category = st.selectbox("Category", EXPENSE_CATEGORIES)
-        with col2:
-            description = st.text_input("Description", placeholder="Brief note about this expense")
-            expense_date = st.date_input("Date", value=date.today())
-            receipt = st.file_uploader("Upload Receipt (optional)", type=["png", "jpg", "jpeg", "pdf"])
+        
+        # --- THE FORM ---
+        with st.form("expense_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                vehicle_name = st.selectbox("Vehicle", list(vehicle_dict.keys()))
+                amount = st.number_input("Amount (₦)", min_value=0.0, step=500.0, format="%.2f")
+                category = st.selectbox("Category", EXPENSE_CATEGORIES)
+            with col2:
+                description = st.text_input("Description", placeholder="Brief note")
+                expense_date = st.date_input("Date", value=date.today())
+                receipt = st.file_uploader("Upload Receipt (optional)", type=["png", "jpg", "jpeg", "pdf"])
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("💾  Save Expense"):
-            receipt_path = ""
-            if receipt:
-                os.makedirs("uploads", exist_ok=True)
-                receipt_path = f"uploads/{receipt.name}"
-                with open(receipt_path, "wb") as f:
-                    f.write(receipt.getbuffer())
+            submitted = st.form_submit_button("💾  Save Expense")
 
-            expense = Expense(
-                vehicle_id=vehicle_dict[vehicle_name],
-                amount=amount,
-                description=description,
-                category=category,
-                date=str(expense_date),
-                receipt_path=receipt_path
-            )
-            session.add(expense)
-            session.commit()
-            st.success(f"✅ Expense of **{fmt(amount)}** saved for **{vehicle_name}**!")
-            st.balloons()
+            if submitted:
+                if amount <= 0:
+                    st.error("Please enter an amount.")
+                else:
+                    receipt_path = ""
+                    if receipt:
+                        os.makedirs("uploads", exist_ok=True)
+                        receipt_path = f"uploads/{receipt.name}"
+                        with open(receipt_path, "wb") as f:
+                            f.write(receipt.getbuffer())
 
+                    expense = Expense(
+                        vehicle_id=vehicle_dict[vehicle_name],
+                        amount=amount,
+                        description=description,
+                        category=category,
+                        date=str(expense_date),
+                        receipt_path=receipt_path
+                    )
+                    session.add(expense)
+                    session.commit()
+                    st.toast(f"✅ Expense of {fmt(amount)} saved!", icon="💸")
+                    st.balloons()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: ADD INCOME
@@ -695,25 +719,32 @@ elif menu == "💰  Add Income":
         st.warning("Add a vehicle first before recording income.")
     else:
         st.markdown("<br>", unsafe_allow_html=True)
-        col1, col2 = st.columns(2)
-        with col1:
-            vehicle_name = st.selectbox("Vehicle", list(vehicle_dict.keys()))
-            amount = st.number_input("Income Amount (₦)", min_value=0.0, step=500.0,
-                                     format="%.2f")
-        with col2:
-            income_date = st.date_input("Date", value=date.today())
+        
+        # This 'with st.form' is what makes it clear after you click save
+        with st.form("income_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                vehicle_name = st.selectbox("Vehicle", list(vehicle_dict.keys()))
+                amount = st.number_input("Income Amount (₦)", min_value=0.0, step=500.0, format="%.2f")
+            with col2:
+                income_date = st.date_input("Date", value=date.today())
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("💾  Save Income"):
-            income = Income(
-                vehicle_id=vehicle_dict[vehicle_name],
-                amount=amount,
-                date=str(income_date)
-            )
-            session.add(income)
-            session.commit()
-            st.success(f"✅ Income of **{fmt(amount)}** recorded for **{vehicle_name}**!")
-            st.balloons()
+            submitted = st.form_submit_button("💾  Save Income")
+
+            if submitted:
+                if amount <= 0:
+                    st.error("Please enter an amount.")
+                else:
+                    income = Income(
+                        vehicle_id=vehicle_dict[vehicle_name],
+                        amount=amount,
+                        date=str(income_date)
+                    )
+                    session.add(income)
+                    session.commit()
+                    st.toast(f"✅ Income of {fmt(amount)} recorded!", icon="💰")
+                    st.balloons()
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
