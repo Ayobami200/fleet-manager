@@ -4,3 +4,4 @@ sqlalchemy
 pillow
 openpyxl
 plotly
+psycopg2-binary
