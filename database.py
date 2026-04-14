@@ -11,7 +11,13 @@ DB_URL = st.secrets.get("DB_URL", "sqlite:///./fleet.db")
 if DB_URL.startswith("postgres://"):
     DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(DB_URL)
+engine = create_engine(
+    DB_URL, 
+    pool_pre_ping=True,  # This checks if the connection is alive before using it
+    pool_recycle=300,    # This refreshes the connection every 5 minutes
+    connect_args={'sslmode': 'require'} # Explicitly tells Postgres to use SSL
+)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
