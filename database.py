@@ -3,16 +3,16 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 import streamlit as st
 
-# 1. Get the URL from Streamlit Secrets (for Cloud) or fallback to SQLite (for Local)
-# In your secrets.toml it should be under [connections.postgresql]
+# 1. Look for the secret. If not found, use local SQLite
 DB_URL = st.secrets.get("DB_URL", "sqlite:///./fleet.db")
 
+# 2. Handle the Postgres naming convention
 if DB_URL.startswith("postgres://"):
     DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
 
-# 2. Create the engine conditionally
+# 3. Create the engine safely
 if "postgresql" in DB_URL:
-    # Use Postgres settings
+    # We are on the Cloud (Postgres)
     engine = create_engine(
         DB_URL,
         pool_pre_ping=True,
@@ -20,12 +20,17 @@ if "postgresql" in DB_URL:
         connect_args={'sslmode': 'require'}
     )
 else:
-    # Use SQLite settings (for local testing)
-    engine = create_engine(DB_URL)
+    # We are Local (SQLite)
+    # SQLite does NOT accept 'sslmode', so we leave it out here
+    engine = create_engine(
+        DB_URL,
+        connect_args={"check_same_thread": False} if "sqlite" in DB_URL else {}
+    )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+# --- DATABASE MODELS ---
 class Driver(Base):
     __tablename__ = 'drivers'
     id = Column(Integer, primary_key=True)
