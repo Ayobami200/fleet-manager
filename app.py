@@ -9,7 +9,11 @@ from database import SessionLocal, init_db, Vehicle, Expense, Income, Driver
 
 # ── Init ──────────────────────────────────────────────────────────────────────
 init_db()
-session = SessionLocal()
+
+def get_session():
+    return SessionLocal()
+
+session = get_session()
 
 st.set_page_config(
     page_title="FleetIQ — Fleet Manager",
@@ -313,6 +317,7 @@ if menu == "📊  Dashboard":
         driver_name = v.driver.name if v.driver else "Unassigned"
         summary_data.append({
             "Vehicle": v.name,
+            "Location": v.location or "Unknown",
             "Plate": v.plate or "—",
             "Driver": driver_name,
             "Income": total_i,
@@ -328,14 +333,25 @@ if menu == "📊  Dashboard":
     best_vehicle = df.loc[df["Profit"].idxmax(), "Vehicle"] if not df.empty else "—"
 
     # ── KPI Row ───────────────────────────────────────────────────────────────
+    total_income = df["Income"].sum()
+    total_expense = df["Expense"].sum()
+    total_profit = df["Profit"].sum()
+    
+    # SAFE MARGIN CALCULATION
+    margin = 0
+    if total_income > 0:
+        margin = (total_profit / total_income) * 100
+
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Total Fleet Income", fmt(total_income))
     k2.metric("Total Fleet Expenses", fmt(total_expense))
-    k3.metric("Net Profit", fmt(total_profit),
-              delta=f"{(total_profit/total_income*100):.1f}% margin" if total_income else None)
+    
+    # Added the margin safety here
+    k3.metric("Net Profit", fmt(total_profit), 
+              delta=f"{margin:.1f}% margin" if total_income > 0 else None)
+    
+    best_vehicle = df.loc[df["Profit"].idxmax(), "Vehicle"] if not df.empty and total_income > 0 else "—"
     k4.metric("Best Performing Vehicle", best_vehicle)
-
-    st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Vehicle Selector ──────────────────────────────────────────────────────
     st.markdown("""<p style="font-size:0.7rem;font-weight:700;color:#2563EB;
@@ -416,6 +432,28 @@ if menu == "📊  Dashboard":
                 coloraxis_showscale=False, xaxis_tickangle=-30
             )
             st.plotly_chart(fig2, use_container_width=True)
+
+        st.divider()
+        st.markdown("""<p style="font-family:'Syne',sans-serif;font-weight:700;
+                    font-size:0.95rem;color:#0A1628;margin-bottom:0.5rem;">
+                    📍 Performance by Location</p>""", unsafe_allow_html=True)
+        
+        # Grouping data by location
+        loc_df = display_df.groupby("Location")[["Income", "Expense"]].sum().reset_index()
+        
+        fig_loc = px.bar(
+            loc_df, x="Location", y=["Income", "Expense"],
+            barmode="group",
+            color_discrete_map={"Income": "#2563EB", "Expense": "#F59E0B"},
+            template="plotly_white"
+        )
+        fig_loc.update_layout(
+            plot_bgcolor="rgba(0,0,0,0)", 
+            paper_bgcolor="rgba(0,0,0,0)",
+            margin=dict(t=10, b=10, l=0, r=0),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        st.plotly_chart(fig_loc, use_container_width=True)
 
     # ── Expense Category Breakdown ────────────────────────────────────────────
     expense_data = []
@@ -507,48 +545,47 @@ if menu == "📊  Dashboard":
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: VEHICLES
 # ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: VEHICLES (Updated with Location Field)
+# ══════════════════════════════════════════════════════════════════════════════
 elif menu == "🚗  Vehicles":
-    page_header("Vehicles", "Manage your fleet of vehicles")
+    page_header("Vehicles", "Manage fleet, assignments, and locations")
 
-    tab1, tab2 = st.tabs(["➕  Add Vehicle", "📋  All Vehicles"])
+    tab1, tab2, tab3 = st.tabs(["➕  Add Vehicle", "📋  All Vehicles", "✏️  Update/Reassign"])
 
+    # --- TAB 1: ADD NEW VEHICLE ---
     with tab1:
         st.markdown("<br>", unsafe_allow_html=True)
-        
-        # --- THE FORM ---
         with st.form("add_vehicle_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
             with col1:
                 v_name = st.text_input("Vehicle Name", placeholder="e.g. Toyota Hiace")
                 v_plate = st.text_input("Plate Number", placeholder="e.g. LAG-234-XY")
             with col2:
-                # Refresh drivers list for the dropdown
+                # ADDED: Location Input
+                v_location = st.text_input("Operational Location", placeholder="e.g. Lagos, Abuja")
+                
                 drivers = session.query(Driver).all()
                 driver_options = {"None": None, **{d.name: d.id for d in drivers}}
                 selected_driver = st.selectbox("Assign Driver (optional)", list(driver_options.keys()))
 
             submitted = st.form_submit_button("Add Vehicle")
-
             if submitted:
                 if v_name.strip():
                     vehicle = Vehicle(
-                        name=v_name.strip(),
+                        name=v_name.strip(), 
                         plate=v_plate.strip(),
+                        location=v_location.strip(), # SAVE LOCATION
                         driver_id=driver_options[selected_driver]
                     )
                     session.add(vehicle)
                     session.commit()
-                    
-                    st.toast(f"✅ Vehicle {v_name} added to fleet!", icon='🚗')
-                    st.balloons()
-                    
-                    # IMPORTANT: Wait a second for the toast, then rerun to update dropdowns
-                    import time
-                    time.sleep(1)
-                    st.rerun()
+                    st.toast(f"✅ {v_name} added to {v_location}!", icon='🚗')
+                    import time; time.sleep(1); st.rerun()
                 else:
                     st.warning("Please enter a vehicle name.")
 
+    # --- TAB 2: VIEW & DELETE ---
     with tab2:
         st.markdown("<br>", unsafe_allow_html=True)
         vehicles = session.query(Vehicle).all()
@@ -557,36 +594,82 @@ elif menu == "🚗  Vehicles":
         else:
             rows = []
             for v in vehicles:
-                expenses = session.query(Expense).filter_by(vehicle_id=v.id).all()
-                incomes = session.query(Income).filter_by(vehicle_id=v.id).all()
-                total_e = sum(e.amount for e in expenses)
-                total_i = sum(i.amount for i in incomes)
                 rows.append({
+                    "ID": v.id,
                     "Vehicle": v.name,
                     "Plate": v.plate or "—",
-                    "Driver": v.driver.name if v.driver else "Unassigned",
-                    "Total Income": fmt(total_i),
-                    "Total Expense": fmt(total_e),
-                    "Net Profit": fmt(total_i - total_e),
-                    "Status": "🟢 Profit" if total_i >= total_e else "🔴 Loss",
+                    "Location": v.location or "Unknown", # DISPLAY LOCATION
+                    "Current Driver": v.driver.name if v.driver else "Unassigned",
                 })
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
+            st.divider()
+            st.subheader("🗑️ Delete a Vehicle")
+            v_names_map = {f"{v.name} ({v.plate})": v.id for v in vehicles}
+            v_to_del = st.selectbox("Select vehicle to PERMANENTLY remove", list(v_names_map.keys()))
+            if st.button("Delete Vehicle", type="primary"):
+                target = session.query(Vehicle).get(v_names_map[v_to_del])
+                session.query(Expense).filter_by(vehicle_id=target.id).delete()
+                session.query(Income).filter_by(vehicle_id=target.id).delete()
+                session.delete(target)
+                session.commit()
+                st.toast("Vehicle and data removed.")
+                st.rerun()
+
+    # --- TAB 3: UPDATE & REASSIGN ---
+    with tab3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        vehicles = session.query(Vehicle).all()
+        drivers = session.query(Driver).all()
+        
+        if not vehicles:
+            st.info("No vehicles to update.")
+        else:
+            v_select_map = {f"{v.name} ({v.plate or 'No plate'})": v.id for v in vehicles}
+            selected_v_label = st.selectbox("Choose a Vehicle to Edit", list(v_select_map.keys()))
+            target_vehicle = session.query(Vehicle).get(v_select_map[selected_v_label])
             
+            st.divider()
+            st.write(f"### Editing: {target_vehicle.name}")
+            
+            with st.form("update_vehicle_form"):
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    new_name = st.text_input("Edit Name", value=target_vehicle.name)
+                    new_plate = st.text_input("Edit Plate", value=target_vehicle.plate or "")
+                with col_b:
+                    # ADDED: Update Location
+                    new_location = st.text_input("Edit Location", value=target_vehicle.location or "")
+                    
+                    driver_opts = {"Unassigned (None)": None, **{d.name: d.id for d in drivers}}
+                    current_driver_name = target_vehicle.driver.name if target_vehicle.driver else "Unassigned (None)"
+                    default_idx = list(driver_opts.keys()).index(current_driver_name) if current_driver_name in driver_opts else 0
+                    new_driver = st.selectbox("Reassign Driver", list(driver_opts.keys()), index=default_idx)
+
+                if st.form_submit_button("💾  Save Changes"):
+                    target_vehicle.name = new_name.strip()
+                    target_vehicle.plate = new_plate.strip()
+                    target_vehicle.location = new_location.strip() # UPDATE LOCATION
+                    target_vehicle.driver_id = driver_opts[new_driver]
+                    
+                    session.commit()
+                    st.toast("✅ Vehicle updated successfully!", icon="📝")
+                    import time; time.sleep(1); st.rerun()
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: DRIVERS
 # ══════════════════════════════════════════════════════════════════════════════
 elif menu == "👤  Drivers":
-    page_header("Drivers", "Manage driver assignments")
+    page_header("Drivers", "Manage driver profiles and information")
 
-    tab1, tab2 = st.tabs(["➕  Add Driver", "📋  All Drivers"])
+    # We now have 3 tabs here as well
+    tab1, tab2, tab3 = st.tabs(["➕  Add Driver", "📋  All Drivers", "✏️  Update Profile"])
 
+    # --- TAB 1: ADD NEW DRIVER ---
     with tab1:
         st.markdown("<br>", unsafe_allow_html=True)
-        
-        # --- THE FORM ---
         with st.form("add_driver_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
             with col1:
@@ -596,7 +679,6 @@ elif menu == "👤  Drivers":
                 d_license = st.text_input("License Number", placeholder="e.g. LAG20241234")
 
             submitted = st.form_submit_button("Add Driver")
-
             if submitted:
                 if d_name.strip():
                     driver = Driver(
@@ -606,16 +688,12 @@ elif menu == "👤  Drivers":
                     )
                     session.add(driver)
                     session.commit()
-                    
                     st.toast(f"✅ Driver {d_name} registered!", icon='👤')
-                    
-                    # IMPORTANT: Rerun so the Vehicle page dropdown sees the new driver
-                    import time
-                    time.sleep(1)
-                    st.rerun()
+                    import time; time.sleep(1); st.rerun()
                 else:
                     st.warning("Please enter the driver's name.")
 
+    # --- TAB 2: VIEW & DELETE ---
     with tab2:
         st.markdown("<br>", unsafe_allow_html=True)
         drivers = session.query(Driver).all()
@@ -626,6 +704,7 @@ elif menu == "👤  Drivers":
             for d in drivers:
                 assigned = [v.name for v in d.vehicles]
                 rows.append({
+                    "ID": d.id,
                     "Name": d.name,
                     "Phone": d.phone or "—",
                     "License": d.license_number or "—",
@@ -633,26 +712,61 @@ elif menu == "👤  Drivers":
                 })
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
+            # --- Delete Section ---
+            st.divider()
+            st.subheader("🗑️ Remove a Driver")
+            d_names_map = {d.name: d.id for d in drivers}
+            d_to_del_name = st.selectbox("Select driver to remove", list(d_names_map.keys()), key="del_d_select")
+            
+            if st.button("Delete Driver Profile", type="primary"):
+                target_d = session.query(Driver).get(d_names_map[d_to_del_name])
+                # Unlink from vehicles first
+                for v in target_d.vehicles:
+                    v.driver_id = None
+                session.delete(target_d)
+                session.commit()
+                st.toast(f"Driver '{d_to_del_name}' removed.")
+                st.rerun()
 
-            with tab2:
-            # ... (your existing table code) ...
+    # --- TAB 3: UPDATE DRIVER PROFILE (The New Part!) ---
+    with tab3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        drivers = session.query(Driver).all()
         
-                st.divider()
-                st.write("### 🛠️ Danger Zone")
-                v_to_delete = st.selectbox("Select Vehicle to Remove", [v.name for v in vehicles])
-                if st.button("Delete Vehicle and All Its Data", type="primary"):
-                    # Find the vehicle
-                    target_v = session.query(Vehicle).filter_by(name=v_to_delete).first()
-                    if target_v:
-                        # Optional: Delete related expenses/income first if your DB doesn't 'cascade'
-                        session.query(Expense).filter_by(vehicle_id=target_v.id).delete()
-                        session.query(Income).filter_by(vehicle_id=target_v.id).delete()
-                        
-                        session.delete(target_v)
-                        session.commit()
-                        st.toast(f"Vehicle {v_to_delete} removed.")
-                        st.rerun()
+        if not drivers:
+            st.info("No drivers to update.")
+        else:
+            # 1. Select Driver to edit
+            d_select_map = {d.name: d.id for d in drivers}
+            selected_d_name = st.selectbox("Choose a Driver to Edit", list(d_select_map.keys()))
+            
+            target_driver = session.query(Driver).get(d_select_map[selected_d_name])
+            
+            st.divider()
+            st.write(f"### Editing Profile: {target_driver.name}")
+            
+            # 2. Update Form
+            with st.form("update_driver_form"):
+                col_x, col_y = st.columns(2)
+                with col_x:
+                    new_d_name = st.text_input("Edit Name", value=target_driver.name)
+                    new_d_phone = st.text_input("Edit Phone", value=target_driver.phone or "")
+                with col_y:
+                    new_d_license = st.text_input("Edit License", value=target_driver.license_number or "")
 
+                if st.form_submit_button("💾  Update Profile"):
+                    if new_d_name.strip():
+                        target_driver.name = new_d_name.strip()
+                        target_driver.phone = new_d_phone.strip()
+                        target_driver.license_number = new_d_license.strip()
+                        
+                        session.commit()
+                        st.toast(f"✅ Profile for {new_d_name} updated!", icon="👤")
+                        import time; time.sleep(1); st.rerun()
+                    else:
+                        st.error("Name cannot be empty.")
+
+   
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: ADD EXPENSE
@@ -744,8 +858,6 @@ elif menu == "💰  Add Income":
                     session.commit()
                     st.toast(f"✅ Income of {fmt(amount)} recorded!", icon="💰")
                     st.balloons()
-
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: RECORDS (REPLACE EVERYTHING FROM HERE TO THE BOTTOM)
@@ -854,3 +966,7 @@ elif menu == "📋  Records":
                     session.commit()
                     st.toast("Income Record Deleted.")
                     st.rerun()
+
+
+# ── Cleanup ───────────────────────────────────────────────────────────────────
+session.close()
