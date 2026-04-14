@@ -7,16 +7,21 @@ import streamlit as st
 # In your secrets.toml it should be under [connections.postgresql]
 DB_URL = st.secrets.get("DB_URL", "sqlite:///./fleet.db")
 
-# 2. Fix for Heroku/Render/Neon (Postgres URLs often start with postgres:// but SQLAlchemy needs postgresql://)
 if DB_URL.startswith("postgres://"):
     DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(
-    DB_URL, 
-    pool_pre_ping=True,  # This checks if the connection is alive before using it
-    pool_recycle=300,    # This refreshes the connection every 5 minutes
-    connect_args={'sslmode': 'require'} # Explicitly tells Postgres to use SSL
-)
+# 2. Create the engine conditionally
+if "postgresql" in DB_URL:
+    # Use Postgres settings
+    engine = create_engine(
+        DB_URL,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        connect_args={'sslmode': 'require'}
+    )
+else:
+    # Use SQLite settings (for local testing)
+    engine = create_engine(DB_URL)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
