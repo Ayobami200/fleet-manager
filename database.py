@@ -3,32 +3,36 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 import streamlit as st
 
-# 1. Look for the secret. If not found, use local SQLite
-DB_URL = st.secrets.get("DB_URL", "sqlite:///./fleet.db")
-
-# 2. Handle the Postgres naming convention
-if DB_URL.startswith("postgres://"):
-    DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
-
-# 3. Create the engine safely
-if "postgresql" in DB_URL:
-    # We are on the Cloud (Postgres)
+# --- STRICT POSTGRES CONNECTION ---
+try:
+    # We force the app to look for the secret. No fallback allowed.
+    DB_URL = st.secrets["DB_URL"]
+    
+    # Fix the naming convention if necessary
+    if DB_URL.startswith("postgres://"):
+        DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
+        
+    # Create engine with "Resiliency" settings
     engine = create_engine(
         DB_URL,
         pool_pre_ping=True,
         pool_recycle=300,
         connect_args={'sslmode': 'require'}
     )
-else:
-    # We are Local (SQLite)
-    # SQLite does NOT accept 'sslmode', so we leave it out here
-    engine = create_engine(
-        DB_URL,
-        connect_args={"check_same_thread": False} if "sqlite" in DB_URL else {}
-    )
+    
+except Exception as e:
+    st.error("🚨 CRITICAL ERROR: Could not connect to the Postgres Database.")
+    st.info("Check your Streamlit Secrets for 'DB_URL'.")
+    st.stop() # This stops the app completely so you don't lose data
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+# ... (Keep your Driver, Vehicle, Expense, and Income classes exactly as they are) ...
+
+def init_db():
+    # This will now only ever run on your Neon Postgres database
+    Base.metadata.create_all(bind=engine)
 
 # --- DATABASE MODELS ---
 class Driver(Base):
