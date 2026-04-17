@@ -6,9 +6,19 @@ import io
 import os
 from datetime import date, datetime, timedelta
 from database import SessionLocal, init_db, Vehicle, Expense, Income, Driver
+import cloudinary
+import cloudinary.uploader
+
 
 # ── Init ──────────────────────────────────────────────────────────────────────
 init_db()
+
+cloudinary.config(
+    cloud_name = st.secrets["CLOUDINARY_CLOUD_NAME"],
+    api_key = st.secrets["CLOUDINARY_API_KEY"],
+    api_secret = st.secrets["CLOUDINARY_API_SECRET"],
+    secure = True
+)
 
 def get_session():
     return SessionLocal()
@@ -542,9 +552,7 @@ if menu == "📊  Dashboard":
         )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGE: VEHICLES
-# ══════════════════════════════════════════════════════════════════════════════
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: VEHICLES (Updated with Location Field)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -775,6 +783,8 @@ elif menu == "💸  Add Expense":
     page_header("Add Expense", "Record a new expense for a vehicle")
 
     vehicles = session.query(Vehicle).all()
+    
+    # We define it as 'vehicle_dict' here
     vehicle_dict = {f"{v.name} ({v.plate or 'No plate'})": v.id for v in vehicles}
 
     if not vehicle_dict:
@@ -782,14 +792,15 @@ elif menu == "💸  Add Expense":
     else:
         st.markdown("<br>", unsafe_allow_html=True)
         
-        # --- THE FORM ---
         with st.form("expense_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
             with col1:
+                # We save the choice into 'vehicle_name'
                 vehicle_name = st.selectbox("Vehicle", list(vehicle_dict.keys()))
                 amount = st.number_input("Amount (₦)", min_value=0.0, step=500.0, format="%.2f")
                 category = st.selectbox("Category", EXPENSE_CATEGORIES)
             with col2:
+                # We save the text into 'description'
                 description = st.text_input("Description", placeholder="Brief note")
                 expense_date = st.date_input("Date", value=date.today())
                 receipt = st.file_uploader("Upload Receipt (optional)", type=["png", "jpg", "jpeg", "pdf"])
@@ -800,20 +811,21 @@ elif menu == "💸  Add Expense":
                 if amount <= 0:
                     st.error("Please enter an amount.")
                 else:
-                    receipt_path = ""
+                    image_url = ""
                     if receipt:
-                        os.makedirs("uploads", exist_ok=True)
-                        receipt_path = f"uploads/{receipt.name}"
-                        with open(receipt_path, "wb") as f:
-                            f.write(receipt.getbuffer())
+                        with st.spinner("Uploading receipt to cloud..."):
+                            # This sends the file to Cloudinary
+                            upload_result = cloudinary.uploader.upload(receipt)
+                            image_url = upload_result["secure_url"]
 
+                    # USE THE CORRECT VARIABLE NAMES HERE:
                     expense = Expense(
-                        vehicle_id=vehicle_dict[vehicle_name],
+                        vehicle_id=vehicle_dict[vehicle_name], # Matches the names above
                         amount=amount,
-                        description=description,
+                        description=description, # Matches the input above
                         category=category,
                         date=str(expense_date),
-                        receipt_path=receipt_path
+                        receipt_path=image_url   # This saves the Cloudinary link
                     )
                     session.add(expense)
                     session.commit()
@@ -872,6 +884,7 @@ elif menu == "📋  Records":
     tab1, tab2 = st.tabs(["💸  Expenses", "💰  Income"])
 
     # --- TAB 1: EXPENSES ---
+    # --- TAB 1: EXPENSES ---
     with tab1:
         expenses = session.query(Expense).all()
         if not expenses:
@@ -886,16 +899,25 @@ elif menu == "📋  Records":
                     "Category": e.category or "Other",
                     "Amount": float(e.amount),
                     "Date": e.date,
-                    "Description": e.description or ""
+                    "Description": e.description or "",      # This shows the text
+                    "Receipt URL": e.receipt_path or ""       # Added this to show the link
                 })
             
             df_exp = pd.DataFrame(exp_data)
             
             st.write("### Expense List")
-            st.caption("Double-click any cell to edit details.")
+            st.caption("Double-click any cell to edit. Blue links open receipts.")
             
-            # Using data_editor to allow corrections
-            edited_exp_df = st.data_editor(df_exp, key="exp_edit_table", hide_index=True, use_container_width=True)
+            # Restructured data_editor with column_config to make the link clickable
+            edited_exp_df = st.data_editor(
+                df_exp, 
+                key="exp_edit_table", 
+                hide_index=True, 
+                use_container_width=True,
+                column_config={
+                    "Receipt URL": st.column_config.LinkColumn("Receipt URL"), # Makes the link blue/clickable
+                }
+            )
 
             col1, col2 = st.columns(2)
             with col1:
@@ -906,7 +928,7 @@ elif menu == "📋  Records":
                             record.amount = row["Amount"]
                             record.category = row["Category"]
                             record.date = str(row["Date"])
-                            record.description = row["Description"]
+                            record.description = row["Description"] # Saves any edits to description
                     session.commit()
                     st.toast("Expenses Updated!", icon="✅")
                     st.rerun()
