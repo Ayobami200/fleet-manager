@@ -907,9 +907,10 @@ elif menu == "📋  Records":
 
             
             #Create a list for the editor
-            urls = e.receipt_path.split(",") if e.receipt_path else []
+            
             exp_data = []
             for e in expenses:
+                urls = e.receipt_path.split(",") if e.receipt_path else []
                 exp_data.append({
                     "ID": e.id,
                     "Vehicle": vehicle_map.get(e.vehicle_id, "Unknown"),
