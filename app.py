@@ -784,7 +784,7 @@ elif menu == "💸  Add Expense":
 
     vehicles = session.query(Vehicle).all()
     
-    # We define it as 'vehicle_dict' here
+    # Mapping the display name to the ID
     vehicle_dict = {f"{v.name} ({v.plate or 'No plate'})": v.id for v in vehicles}
 
     if not vehicle_dict:
@@ -795,39 +795,53 @@ elif menu == "💸  Add Expense":
         with st.form("expense_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
             with col1:
-                # We save the choice into 'vehicle_name'
                 vehicle_name = st.selectbox("Vehicle", list(vehicle_dict.keys()))
                 amount = st.number_input("Amount (₦)", min_value=0.0, step=500.0, format="%.2f")
                 category = st.selectbox("Category", EXPENSE_CATEGORIES)
             with col2:
-                # We save the text into 'description'
                 description = st.text_input("Description", placeholder="Brief note")
                 expense_date = st.date_input("Date", value=date.today())
-                receipt = st.file_uploader("Upload Receipt (optional)", type=["png", "jpg", "jpeg", "pdf"])
+                
+                # --- CORRECTED: MULTI-FILE UPLOADER ---
+                receipts = st.file_uploader(
+                    "Upload Receipts (Max 2 files)", 
+                    type=["png", "jpg", "jpeg", "pdf"],
+                    accept_multiple_files=True  # Enables multi-upload
+                )
 
             submitted = st.form_submit_button("💾  Save Expense")
 
             if submitted:
                 if amount <= 0:
                     st.error("Please enter an amount.")
+                elif receipts and len(receipts) > 2:
+                    # Prevents saving if more than 2 files are selected
+                    st.error("❌ You can only upload a maximum of 2 files.")
                 else:
-                    image_url = ""
-                    if receipt:
-                        with st.spinner("Uploading receipt to cloud..."):
-                            # This sends the file to Cloudinary
-                            upload_result = cloudinary.uploader.upload(receipt)
-                            image_url = upload_result["secure_url"]
+                    # --- CORRECTED: CLOUDINARY LOOP LOGIC ---
+                    image_urls = []
+                    
+                    if receipts:
+                        with st.spinner(f"Uploading {len(receipts)} file(s) to cloud..."):
+                            for r in receipts:
+                                upload_result = cloudinary.uploader.upload(r)
+                                image_urls.append(upload_result["secure_url"])
+                    
+                    # Joining URLs into a single string separated by a comma
+                    # Example: "https://url1.com,https://url2.com"
+                    final_receipt_path = ",".join(image_urls)
 
-                    # USE THE CORRECT VARIABLE NAMES HERE:
-                    expense = Expense(
-                        vehicle_id=vehicle_dict[vehicle_name], # Matches the names above
+                    # SAVING TO DATABASE
+                    new_expense = Expense(
+                        vehicle_id=vehicle_dict[vehicle_name],
                         amount=amount,
-                        description=description, # Matches the input above
+                        description=description,
                         category=category,
                         date=str(expense_date),
-                        receipt_path=image_url   # This saves the Cloudinary link
+                        receipt_path=final_receipt_path  # Saves the combined string
                     )
-                    session.add(expense)
+                    
+                    session.add(new_expense)
                     session.commit()
                     st.toast(f"✅ Expense of {fmt(amount)} saved!", icon="💸")
                     st.balloons()
@@ -890,7 +904,10 @@ elif menu == "📋  Records":
         if not expenses:
             st.info("No expenses recorded yet.")
         else:
-            # Create a list for the editor
+
+            
+            #Create a list for the editor
+            urls = e.receipt_path.split(",") if e.receipt_path else []
             exp_data = []
             for e in expenses:
                 exp_data.append({
@@ -899,8 +916,8 @@ elif menu == "📋  Records":
                     "Category": e.category or "Other",
                     "Amount": float(e.amount),
                     "Date": e.date,
-                    "Description": e.description or "",      # This shows the text
-                    "Receipt URL": e.receipt_path or ""       # Added this to show the link
+                    "Receipt 1": urls[0] if len(urls) > 0 else "",
+                    "Receipt 2": urls[1] if len(urls) > 1 else ""     
                 })
             
             df_exp = pd.DataFrame(exp_data)
