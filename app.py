@@ -900,14 +900,11 @@ elif menu == "📋  Records":
     # --- TAB 1: EXPENSES ---
     # --- TAB 1: EXPENSES ---
     with tab1:
+        # --- TAB 1: EXPENSES ---
         expenses = session.query(Expense).all()
         if not expenses:
             st.info("No expenses recorded yet.")
         else:
-
-            
-            #Create a list for the editor
-            
             exp_data = []
             for e in expenses:
                 urls = e.receipt_path.split(",") if e.receipt_path else []
@@ -917,6 +914,7 @@ elif menu == "📋  Records":
                     "Category": e.category or "Other",
                     "Amount": float(e.amount),
                     "Date": e.date,
+                    "Description": e.description or "", # Description is back!
                     "Receipt 1": urls[0] if len(urls) > 0 else "",
                     "Receipt 2": urls[1] if len(urls) > 1 else ""     
                 })
@@ -924,16 +922,25 @@ elif menu == "📋  Records":
             df_exp = pd.DataFrame(exp_data)
             
             st.write("### Expense List")
-            st.caption("Double-click any cell to edit. Blue links open receipts.")
             
-            # Restructured data_editor with column_config to make the link clickable
+            # --- THE FIX FOR LINKS AND COLUMN WIDTH ---
             edited_exp_df = st.data_editor(
                 df_exp, 
                 key="exp_edit_table", 
                 hide_index=True, 
                 use_container_width=True,
                 column_config={
-                    "Receipt URL": st.column_config.LinkColumn("Receipt URL"), # Makes the link blue/clickable
+                    # "display_text" hides the long URL and shows a clean button
+                    "Receipt 1": st.column_config.LinkColumn(
+                        "Receipt 1", 
+                        display_text="View 📄" 
+                    ),
+                    "Receipt 2": st.column_config.LinkColumn(
+                        "Receipt 2", 
+                        display_text="View 📄"
+                    ),
+                    "ID": st.column_config.NumberColumn(width="small"),
+                    "Amount": st.column_config.NumberColumn(format="₦%.2f")
                 }
             )
 
