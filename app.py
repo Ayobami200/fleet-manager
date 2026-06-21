@@ -231,6 +231,50 @@ def card(content_fn, padding="1.5rem"):
 EXPENSE_CATEGORIES = ["Fuel", "Maintenance", "Repair", "Insurance", "Toll", "Wash", "Salary", "Other"]
 
 
+# ── Custom Period Helper (20th-to-20th business cycle) ────────────────────────
+def get_custom_period_label(d):
+    """
+    Returns the cycle-start label for the 20th-to-20th business cycle
+    that the given date belongs to (used for expense trend chart).
+    """
+    if d.day >= 20:
+        return d.replace(day=20).strftime("%b %d, %Y")
+    else:
+        first_of_month = d.replace(day=1)
+        prev_month_end = first_of_month - timedelta(days=1)
+        return prev_month_end.replace(day=20).strftime("%b %d, %Y")
+
+def get_current_cycle_start():
+    """Returns the start date of the current 20th-to-20th business cycle."""
+    today = date.today()
+    if today.day >= 20:
+        return today.replace(day=20)
+    else:
+        first_of_month = today.replace(day=1)
+        prev_month_end = first_of_month - timedelta(days=1)
+        return prev_month_end.replace(day=20)
+
+def get_cycle_start_for_income(d):
+    """
+    Income paid ON the 20th belongs to the cycle that is CLOSING,
+    not the one opening. So the 20th is treated as the last day of
+    the previous cycle for income purposes.
+
+    Examples:
+      June 20 (payment day) → belongs to Apr 20 – Jun 20 cycle → returns Apr 20 start
+      June 5                → belongs to Apr 20 – Jun 19 cycle  → returns Apr 20 start
+      June 21               → belongs to Jun 20 – Jul 20 cycle  → returns Jun 20 start
+    """
+    if d.day > 20:
+        # After payment day — belongs to the cycle that started on the 20th this month
+        return d.replace(day=20)
+    else:
+        # On or before the 20th — belongs to the previous cycle
+        first_of_month = d.replace(day=1)
+        prev_month_end = first_of_month - timedelta(days=1)
+        return prev_month_end.replace(day=20)
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""
@@ -291,7 +335,7 @@ if menu == "📊  Dashboard":
         col_f1, col_f2, col_f3, col_f4 = st.columns([1, 1, 1, 3])
         with col_f1:
             if st.button("This Month"):
-                st.session_state["date_from"] = date.today().replace(day=1)
+                st.session_state["date_from"] = get_current_cycle_start()
                 st.session_state["date_to"] = date.today()
         with col_f2:
             if st.button("Last 3 Months"):
@@ -305,17 +349,207 @@ if menu == "📊  Dashboard":
         date_from = st.session_state.get("date_from", date(2000, 1, 1))
         date_to = st.session_state.get("date_to", date.today())
 
+    # Show the active cycle range so the user always knows what period they're viewing
+    st.markdown(
+        f'<p style="font-size:0.78rem;color:#64748B;margin-top:0.25rem;">'
+        f'📅 Viewing: <strong>{date_from.strftime("%b %d, %Y")}</strong> → '
+        f'<strong>{date_to.strftime("%b %d, %Y")}</strong></p>',
+        unsafe_allow_html=True
+    )
+
     st.markdown("<br>", unsafe_allow_html=True)
 
+    # ── Business Cycle Selector ───────────────────────────────────────────────
+    # Build a list of all 20th-to-20th cycles that have any data
+    all_dates = []
+    for e in expenses:
+        try:
+            all_dates.append(datetime.strptime(str(e.date), "%Y-%m-%d").date())
+        except:
+            pass
+    for i in incomes:
+        try:
+            all_dates.append(datetime.strptime(str(i.date), "%Y-%m-%d").date())
+        except:
+            pass
+
+    if all_dates:
+        # Generate all cycle start dates from earliest record to today
+        def get_cycle_start_date(d):
+            if d.day >= 20:
+                return d.replace(day=20)
+            else:
+                first = d.replace(day=1)
+                prev = first - timedelta(days=1)
+                return prev.replace(day=20)
+
+        earliest = min(all_dates)
+        cycle_starts = []
+        cursor = get_cycle_start_date(earliest)
+        today_cycle = get_current_cycle_start()
+        while cursor <= today_cycle:
+            cycle_starts.append(cursor)
+            # Advance to next cycle (add ~30 days then snap to 20th)
+            next_month_first = (cursor.replace(day=1) + timedelta(days=32)).replace(day=1)
+            cursor = next_month_first.replace(day=20)
+
+        # Build labels like "May 20 – Jun 19, 2025"
+        def cycle_label(start):
+            # cycle end = day before next cycle start
+            next_start_first = (start.replace(day=1) + timedelta(days=32)).replace(day=1)
+            end = next_start_first.replace(day=20) - timedelta(days=1)
+            return f"{start.strftime('%b %d')} – {end.strftime('%b %d, %Y')}"
+
+        cycle_labels = [cycle_label(s) for s in cycle_starts]
+        cycle_map = {cycle_label(s): s for s in cycle_starts}
+
+        st.markdown("""<p style="font-size:0.7rem;font-weight:700;color:#2563EB;
+                    letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.5rem;">
+                    📆 Browse by Business Cycle</p>""", unsafe_allow_html=True)
+
+        selected_cycle_label = st.selectbox(
+            "Select a business cycle to view its full summary",
+            options=list(reversed(cycle_labels)),  # most recent first
+            label_visibility="collapsed"
+        )
+
+        selected_cycle_start = cycle_map[selected_cycle_label]
+        # Cycle end = day before next cycle's 20th
+        next_cs_first = (selected_cycle_start.replace(day=1) + timedelta(days=32)).replace(day=1)
+        selected_cycle_end = next_cs_first.replace(day=20) - timedelta(days=1)
+
+        # Filter data for selected cycle
+        # Expenses: standard window — 20th up to and including 19th of next month
+        def in_cycle_expense(d):
+            try:
+                parsed = datetime.strptime(str(d), "%Y-%m-%d").date()
+                return selected_cycle_start <= parsed <= selected_cycle_end
+            except:
+                return False
+
+        # Income: payment ON the 20th belongs to the cycle that just CLOSED,
+        # not the one that just opened — so we use get_cycle_start_for_income()
+        def in_cycle_income(d):
+            try:
+                parsed = datetime.strptime(str(d), "%Y-%m-%d").date()
+                return get_cycle_start_for_income(parsed) == selected_cycle_start
+            except:
+                return False
+
+        cycle_expenses = [e for e in expenses if in_cycle_expense(e.date)]
+        cycle_incomes = [i for i in incomes if in_cycle_income(i.date)]
+
+        cycle_total_expense = sum(e.amount for e in cycle_expenses)
+        cycle_total_income = sum(i.amount for i in cycle_incomes)
+        cycle_profit = cycle_total_income - cycle_total_expense
+        cycle_margin = (cycle_profit / cycle_total_income * 100) if cycle_total_income > 0 else 0
+
+        st.markdown(f"""
+        <div style="background:#fff;border:1px solid #E2E8F0;border-radius:12px;
+                    padding:1.25rem 1.5rem;margin:0.75rem 0 1.25rem;
+                    box-shadow:0 1px 4px rgba(0,0,0,0.05);">
+            <p style="font-family:'Syne',sans-serif;font-weight:700;font-size:1rem;
+                      color:#0A1628;margin:0 0 0.1rem;">
+                📊 Cycle Summary: {selected_cycle_label}
+            </p>
+            <p style="font-size:0.75rem;color:#94A3B8;margin:0 0 1rem;">
+                {selected_cycle_start.strftime('%B %d, %Y')} → {selected_cycle_end.strftime('%B %d, %Y')}
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        ck1, ck2, ck3, ck4 = st.columns(4)
+        ck1.metric("Cycle Income", fmt(cycle_total_income))
+        ck2.metric("Cycle Expenses", fmt(cycle_total_expense))
+        ck3.metric("Cycle Net Profit", fmt(cycle_profit),
+                   delta=f"{cycle_margin:.1f}% margin" if cycle_total_income > 0 else None)
+        ck4.metric("Transactions", f"{len(cycle_expenses) + len(cycle_incomes)}")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Per-vehicle breakdown for this cycle
+        cycle_vehicle_rows = []
+        for v in vehicles:
+            ve = [e for e in cycle_expenses if e.vehicle_id == v.id]
+            vi = [i for i in cycle_incomes if i.vehicle_id == v.id]
+            if ve or vi:
+                t_e = sum(e.amount for e in ve)
+                t_i = sum(i.amount for i in vi)
+                cycle_vehicle_rows.append({
+                    "Vehicle": v.name,
+                    "Driver": v.driver.name if v.driver else "Unassigned",
+                    "Income": fmt(t_i),
+                    "Expenses": fmt(t_e),
+                    "Net Profit": fmt(t_i - t_e),
+                    "Status": "🟢 Profit" if (t_i - t_e) >= 0 else "🔴 Loss",
+                })
+
+        if cycle_vehicle_rows:
+            cc1, cc2 = st.columns([3, 2])
+            with cc1:
+                st.markdown("""<p style="font-family:'Syne',sans-serif;font-weight:700;
+                            font-size:0.9rem;color:#0A1628;margin-bottom:0.5rem;">
+                            Per-Vehicle Breakdown</p>""", unsafe_allow_html=True)
+                st.dataframe(pd.DataFrame(cycle_vehicle_rows), use_container_width=True, hide_index=True)
+
+            with cc2:
+                # Expense by category for this cycle
+                cat_totals = {}
+                for e in cycle_expenses:
+                    cat = e.category or "Other"
+                    cat_totals[cat] = cat_totals.get(cat, 0) + e.amount
+                if cat_totals:
+                    st.markdown("""<p style="font-family:'Syne',sans-serif;font-weight:700;
+                                font-size:0.9rem;color:#0A1628;margin-bottom:0.5rem;">
+                                Expense by Category</p>""", unsafe_allow_html=True)
+                    cat_df = pd.DataFrame(list(cat_totals.items()), columns=["Category", "Amount"])
+                    fig_cat = px.pie(cat_df, names="Category", values="Amount",
+                                     color_discrete_sequence=px.colors.sequential.Blues_r,
+                                     template="plotly_white")
+                    fig_cat.update_layout(paper_bgcolor="#fff", font_family="DM Sans",
+                                          margin=dict(t=10, b=10, l=0, r=0))
+                    st.plotly_chart(fig_cat, use_container_width=True)
+
+            # Full expense records for this cycle
+            if cycle_expenses:
+                st.markdown("""<p style="font-family:'Syne',sans-serif;font-weight:700;
+                            font-size:0.9rem;color:#0A1628;margin-bottom:0.5rem;">
+                            All Expense Records This Cycle</p>""", unsafe_allow_html=True)
+                exp_records = []
+                vmap = {v.id: v.name for v in vehicles}
+                for e in sorted(cycle_expenses, key=lambda x: x.date, reverse=True):
+                    exp_records.append({
+                        "Date": e.date,
+                        "Vehicle": vmap.get(e.vehicle_id, "Unknown"),
+                        "Category": e.category or "Other",
+                        "Description": e.description or "—",
+                        "Amount": fmt(e.amount),
+                    })
+                st.dataframe(pd.DataFrame(exp_records), use_container_width=True, hide_index=True)
+        else:
+            st.info(f"No transactions found for the cycle: {selected_cycle_label}")
+
+    st.divider()
+
     # ── Build Summary Data ────────────────────────────────────────────────────
-    def in_range(d):
+    def in_range_expense(d):
         try:
             return date_from <= datetime.strptime(str(d), "%Y-%m-%d").date() <= date_to
         except:
             return True
 
-    filtered_expenses = [e for e in expenses if in_range(e.date)]
-    filtered_incomes = [i for i in incomes if in_range(i.date)]
+    def in_range_income(d):
+        # Income on the 20th belongs to the cycle that just closed —
+        # use get_cycle_start_for_income() so the 20th payment lands in the right cycle
+        try:
+            parsed = datetime.strptime(str(d), "%Y-%m-%d").date()
+            cycle_start = get_cycle_start_for_income(parsed)
+            return date_from <= cycle_start <= date_to
+        except:
+            return True
+
+    filtered_expenses = [e for e in expenses if in_range_expense(e.date)]
+    filtered_incomes = [i for i in incomes if in_range_income(i.date)]
 
     summary_data = []
     for v in vehicles:
@@ -346,7 +580,7 @@ if menu == "📊  Dashboard":
     total_income = df["Income"].sum()
     total_expense = df["Expense"].sum()
     total_profit = df["Profit"].sum()
-    
+
     # SAFE MARGIN CALCULATION
     margin = 0
     if total_income > 0:
@@ -355,11 +589,10 @@ if menu == "📊  Dashboard":
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Total Fleet Income", fmt(total_income))
     k2.metric("Total Fleet Expenses", fmt(total_expense))
-    
-    # Added the margin safety here
-    k3.metric("Net Profit", fmt(total_profit), 
+
+    k3.metric("Net Profit", fmt(total_profit),
               delta=f"{margin:.1f}% margin" if total_income > 0 else None)
-    
+
     best_vehicle = df.loc[df["Profit"].idxmax(), "Vehicle"] if not df.empty and total_income > 0 else "—"
     k4.metric("Best Performing Vehicle", best_vehicle)
 
@@ -447,10 +680,9 @@ if menu == "📊  Dashboard":
         st.markdown("""<p style="font-family:'Syne',sans-serif;font-weight:700;
                     font-size:0.95rem;color:#0A1628;margin-bottom:0.5rem;">
                     📍 Performance by Location</p>""", unsafe_allow_html=True)
-        
-        # Grouping data by location
+
         loc_df = display_df.groupby("Location")[["Income", "Expense"]].sum().reset_index()
-        
+
         fig_loc = px.bar(
             loc_df, x="Location", y=["Income", "Expense"],
             barmode="group",
@@ -458,7 +690,7 @@ if menu == "📊  Dashboard":
             template="plotly_white"
         )
         fig_loc.update_layout(
-            plot_bgcolor="rgba(0,0,0,0)", 
+            plot_bgcolor="rgba(0,0,0,0)",
             paper_bgcolor="rgba(0,0,0,0)",
             margin=dict(t=10, b=10, l=0, r=0),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
@@ -500,19 +732,28 @@ if menu == "📊  Dashboard":
         with c2:
             st.markdown("""<p style="font-family:'Syne',sans-serif;font-weight:700;
                         font-size:0.95rem;color:#0A1628;margin-bottom:0.5rem;">
-                        Monthly Expense Trend</p>""", unsafe_allow_html=True)
+                        Expense Trend by Business Cycle</p>""", unsafe_allow_html=True)
+
+            # ── UPDATED: Group by 20th-to-20th business cycle ────────────────
             df_exp["Date"] = pd.to_datetime(df_exp["Date"], errors="coerce")
-            monthly = df_exp.groupby(df_exp["Date"].dt.to_period("M"))["Amount"].sum()
-            monthly.index = monthly.index.astype(str)
-            monthly_df = monthly.reset_index()
-            monthly_df.columns = ["Month", "Amount"]
-            fig4 = px.line(monthly_df, x="Month", y="Amount",
+            df_exp["Period"] = df_exp["Date"].apply(
+                lambda d: get_custom_period_label(d.date()) if pd.notna(d) else None
+            )
+            monthly = df_exp.groupby("Period")["Amount"].sum().reset_index()
+            monthly.columns = ["Month", "Amount"]
+            # Sort chronologically by parsing the label back to a date
+            monthly["_sort"] = pd.to_datetime(monthly["Month"], format="%b %d, %Y")
+            monthly = monthly.sort_values("_sort").drop(columns=["_sort"])
+
+            fig4 = px.line(monthly, x="Month", y="Amount",
                            markers=True, template="plotly_white",
                            color_discrete_sequence=["#2563EB"])
             fig4.update_traces(line_width=2.5, marker_size=7)
             fig4.update_layout(
                 plot_bgcolor="#fff", paper_bgcolor="#fff",
-                font_family="DM Sans", margin=dict(t=10, b=10, l=0, r=0)
+                font_family="DM Sans", margin=dict(t=10, b=10, l=0, r=0),
+                xaxis_title="Cycle Start (20th)",
+                xaxis_tickangle=-30
             )
             st.plotly_chart(fig4, use_container_width=True)
 
@@ -554,14 +795,13 @@ if menu == "📊  Dashboard":
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE: VEHICLES (Updated with Location Field)
+# PAGE: VEHICLES
 # ══════════════════════════════════════════════════════════════════════════════
 elif menu == "🚗  Vehicles":
     page_header("Vehicles", "Manage fleet, assignments, and locations")
 
     tab1, tab2, tab3 = st.tabs(["➕  Add Vehicle", "📋  All Vehicles", "✏️  Update/Reassign"])
 
-    # --- TAB 1: ADD NEW VEHICLE ---
     with tab1:
         st.markdown("<br>", unsafe_allow_html=True)
         with st.form("add_vehicle_form", clear_on_submit=True):
@@ -570,9 +810,7 @@ elif menu == "🚗  Vehicles":
                 v_name = st.text_input("Vehicle Name", placeholder="e.g. Toyota Hiace")
                 v_plate = st.text_input("Plate Number", placeholder="e.g. LAG-234-XY")
             with col2:
-                # ADDED: Location Input
                 v_location = st.text_input("Operational Location", placeholder="e.g. Lagos, Abuja")
-                
                 drivers = session.query(Driver).all()
                 driver_options = {"None": None, **{d.name: d.id for d in drivers}}
                 selected_driver = st.selectbox("Assign Driver (optional)", list(driver_options.keys()))
@@ -581,9 +819,9 @@ elif menu == "🚗  Vehicles":
             if submitted:
                 if v_name.strip():
                     vehicle = Vehicle(
-                        name=v_name.strip(), 
+                        name=v_name.strip(),
                         plate=v_plate.strip(),
-                        location=v_location.strip(), # SAVE LOCATION
+                        location=v_location.strip(),
                         driver_id=driver_options[selected_driver]
                     )
                     session.add(vehicle)
@@ -593,7 +831,6 @@ elif menu == "🚗  Vehicles":
                 else:
                     st.warning("Please enter a vehicle name.")
 
-    # --- TAB 2: VIEW & DELETE ---
     with tab2:
         st.markdown("<br>", unsafe_allow_html=True)
         vehicles = session.query(Vehicle).all()
@@ -606,7 +843,7 @@ elif menu == "🚗  Vehicles":
                     "ID": v.id,
                     "Vehicle": v.name,
                     "Plate": v.plate or "—",
-                    "Location": v.location or "Unknown", # DISPLAY LOCATION
+                    "Location": v.location or "Unknown",
                     "Current Driver": v.driver.name if v.driver else "Unassigned",
                 })
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
@@ -624,31 +861,28 @@ elif menu == "🚗  Vehicles":
                 st.toast("Vehicle and data removed.")
                 st.rerun()
 
-    # --- TAB 3: UPDATE & REASSIGN ---
     with tab3:
         st.markdown("<br>", unsafe_allow_html=True)
         vehicles = session.query(Vehicle).all()
         drivers = session.query(Driver).all()
-        
+
         if not vehicles:
             st.info("No vehicles to update.")
         else:
             v_select_map = {f"{v.name} ({v.plate or 'No plate'})": v.id for v in vehicles}
             selected_v_label = st.selectbox("Choose a Vehicle to Edit", list(v_select_map.keys()))
             target_vehicle = session.query(Vehicle).get(v_select_map[selected_v_label])
-            
+
             st.divider()
             st.write(f"### Editing: {target_vehicle.name}")
-            
+
             with st.form("update_vehicle_form"):
                 col_a, col_b = st.columns(2)
                 with col_a:
                     new_name = st.text_input("Edit Name", value=target_vehicle.name)
                     new_plate = st.text_input("Edit Plate", value=target_vehicle.plate or "")
                 with col_b:
-                    # ADDED: Update Location
                     new_location = st.text_input("Edit Location", value=target_vehicle.location or "")
-                    
                     driver_opts = {"Unassigned (None)": None, **{d.name: d.id for d in drivers}}
                     current_driver_name = target_vehicle.driver.name if target_vehicle.driver else "Unassigned (None)"
                     default_idx = list(driver_opts.keys()).index(current_driver_name) if current_driver_name in driver_opts else 0
@@ -657,9 +891,8 @@ elif menu == "🚗  Vehicles":
                 if st.form_submit_button("💾  Save Changes"):
                     target_vehicle.name = new_name.strip()
                     target_vehicle.plate = new_plate.strip()
-                    target_vehicle.location = new_location.strip() # UPDATE LOCATION
+                    target_vehicle.location = new_location.strip()
                     target_vehicle.driver_id = driver_opts[new_driver]
-                    
                     session.commit()
                     st.toast("✅ Vehicle updated successfully!", icon="📝")
                     import time; time.sleep(1); st.rerun()
@@ -672,10 +905,8 @@ elif menu == "🚗  Vehicles":
 elif menu == "👤  Drivers":
     page_header("Drivers", "Manage driver profiles and information")
 
-    # We now have 3 tabs here as well
     tab1, tab2, tab3 = st.tabs(["➕  Add Driver", "📋  All Drivers", "✏️  Update Profile"])
 
-    # --- TAB 1: ADD NEW DRIVER ---
     with tab1:
         st.markdown("<br>", unsafe_allow_html=True)
         with st.form("add_driver_form", clear_on_submit=True):
@@ -701,7 +932,6 @@ elif menu == "👤  Drivers":
                 else:
                     st.warning("Please enter the driver's name.")
 
-    # --- TAB 2: VIEW & DELETE ---
     with tab2:
         st.markdown("<br>", unsafe_allow_html=True)
         drivers = session.query(Driver).all()
@@ -720,15 +950,13 @@ elif menu == "👤  Drivers":
                 })
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-            # --- Delete Section ---
             st.divider()
             st.subheader("🗑️ Remove a Driver")
             d_names_map = {d.name: d.id for d in drivers}
             d_to_del_name = st.selectbox("Select driver to remove", list(d_names_map.keys()), key="del_d_select")
-            
+
             if st.button("Delete Driver Profile", type="primary"):
                 target_d = session.query(Driver).get(d_names_map[d_to_del_name])
-                # Unlink from vehicles first
                 for v in target_d.vehicles:
                     v.driver_id = None
                 session.delete(target_d)
@@ -736,24 +964,20 @@ elif menu == "👤  Drivers":
                 st.toast(f"Driver '{d_to_del_name}' removed.")
                 st.rerun()
 
-    # --- TAB 3: UPDATE DRIVER PROFILE (The New Part!) ---
     with tab3:
         st.markdown("<br>", unsafe_allow_html=True)
         drivers = session.query(Driver).all()
-        
+
         if not drivers:
             st.info("No drivers to update.")
         else:
-            # 1. Select Driver to edit
             d_select_map = {d.name: d.id for d in drivers}
             selected_d_name = st.selectbox("Choose a Driver to Edit", list(d_select_map.keys()))
-            
             target_driver = session.query(Driver).get(d_select_map[selected_d_name])
-            
+
             st.divider()
             st.write(f"### Editing Profile: {target_driver.name}")
-            
-            # 2. Update Form
+
             with st.form("update_driver_form"):
                 col_x, col_y = st.columns(2)
                 with col_x:
@@ -767,14 +991,13 @@ elif menu == "👤  Drivers":
                         target_driver.name = new_d_name.strip()
                         target_driver.phone = new_d_phone.strip()
                         target_driver.license_number = new_d_license.strip()
-                        
                         session.commit()
                         st.toast(f"✅ Profile for {new_d_name} updated!", icon="👤")
                         import time; time.sleep(1); st.rerun()
                     else:
                         st.error("Name cannot be empty.")
 
-   
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: ADD EXPENSE
@@ -783,15 +1006,13 @@ elif menu == "💸  Add Expense":
     page_header("Add Expense", "Record a new expense for a vehicle")
 
     vehicles = session.query(Vehicle).all()
-    
-    # Mapping the display name to the ID
     vehicle_dict = {f"{v.name} ({v.plate or 'No plate'})": v.id for v in vehicles}
 
     if not vehicle_dict:
         st.warning("Add a vehicle first before recording expenses.")
     else:
         st.markdown("<br>", unsafe_allow_html=True)
-        
+
         with st.form("expense_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
             with col1:
@@ -801,12 +1022,10 @@ elif menu == "💸  Add Expense":
             with col2:
                 description = st.text_input("Description", placeholder="Brief note")
                 expense_date = st.date_input("Date", value=date.today())
-                
-                # --- CORRECTED: MULTI-FILE UPLOADER ---
                 receipts = st.file_uploader(
-                    "Upload Receipts (Max 2 files)", 
+                    "Upload Receipts (Max 2 files)",
                     type=["png", "jpg", "jpeg", "pdf"],
-                    accept_multiple_files=True  # Enables multi-upload
+                    accept_multiple_files=True
                 )
 
             submitted = st.form_submit_button("💾  Save Expense")
@@ -815,36 +1034,32 @@ elif menu == "💸  Add Expense":
                 if amount <= 0:
                     st.error("Please enter an amount.")
                 elif receipts and len(receipts) > 2:
-                    # Prevents saving if more than 2 files are selected
                     st.error("❌ You can only upload a maximum of 2 files.")
                 else:
-                    # --- CORRECTED: CLOUDINARY LOOP LOGIC ---
                     image_urls = []
-                    
+
                     if receipts:
                         with st.spinner(f"Uploading {len(receipts)} file(s) to cloud..."):
                             for r in receipts:
                                 upload_result = cloudinary.uploader.upload(r)
                                 image_urls.append(upload_result["secure_url"])
-                    
-                    # Joining URLs into a single string separated by a comma
-                    # Example: "https://url1.com,https://url2.com"
+
                     final_receipt_path = ",".join(image_urls)
 
-                    # SAVING TO DATABASE
                     new_expense = Expense(
                         vehicle_id=vehicle_dict[vehicle_name],
                         amount=amount,
                         description=description,
                         category=category,
                         date=str(expense_date),
-                        receipt_path=final_receipt_path  # Saves the combined string
+                        receipt_path=final_receipt_path
                     )
-                    
+
                     session.add(new_expense)
                     session.commit()
                     st.toast(f"✅ Expense of {fmt(amount)} saved!", icon="💸")
                     st.balloons()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: ADD INCOME
@@ -859,8 +1074,7 @@ elif menu == "💰  Add Income":
         st.warning("Add a vehicle first before recording income.")
     else:
         st.markdown("<br>", unsafe_allow_html=True)
-        
-        # This 'with st.form' is what makes it clear after you click save
+
         with st.form("income_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
             with col1:
@@ -885,22 +1099,19 @@ elif menu == "💰  Add Income":
                     st.toast(f"✅ Income of {fmt(amount)} recorded!", icon="💰")
                     st.balloons()
 
+
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE: RECORDS (REPLACE EVERYTHING FROM HERE TO THE BOTTOM)
+# PAGE: RECORDS
 # ══════════════════════════════════════════════════════════════════════════════
 elif menu == "📋  Records":
     page_header("Records", "Browse, Edit, or Delete Transactions")
 
-    # This map helps turn vehicle IDs (1, 2, 3) into names (Toyota, Honda)
     vehicles = session.query(Vehicle).all()
     vehicle_map = {v.id: v.name for v in vehicles}
 
     tab1, tab2 = st.tabs(["💸  Expenses", "💰  Income"])
 
-    # --- TAB 1: EXPENSES ---
-    # --- TAB 1: EXPENSES ---
     with tab1:
-        # --- TAB 1: EXPENSES ---
         expenses = session.query(Expense).all()
         if not expenses:
             st.info("No expenses recorded yet.")
@@ -914,29 +1125,27 @@ elif menu == "📋  Records":
                     "Category": e.category or "Other",
                     "Amount": float(e.amount),
                     "Date": e.date,
-                    "Description": e.description or "", # Description is back!
+                    "Description": e.description or "",
                     "Receipt 1": urls[0] if len(urls) > 0 else "",
-                    "Receipt 2": urls[1] if len(urls) > 1 else ""     
+                    "Receipt 2": urls[1] if len(urls) > 1 else ""
                 })
-            
+
             df_exp = pd.DataFrame(exp_data)
-            
+
             st.write("### Expense List")
-            
-            # --- THE FIX FOR LINKS AND COLUMN WIDTH ---
+
             edited_exp_df = st.data_editor(
-                df_exp, 
-                key="exp_edit_table", 
-                hide_index=True, 
+                df_exp,
+                key="exp_edit_table",
+                hide_index=True,
                 use_container_width=True,
                 column_config={
-                    # "display_text" hides the long URL and shows a clean button
                     "Receipt 1": st.column_config.LinkColumn(
-                        "Receipt 1", 
-                        display_text="View 📄" 
+                        "Receipt 1",
+                        display_text="View 📄"
                     ),
                     "Receipt 2": st.column_config.LinkColumn(
-                        "Receipt 2", 
+                        "Receipt 2",
                         display_text="View 📄"
                     ),
                     "ID": st.column_config.NumberColumn(width="small"),
@@ -953,7 +1162,7 @@ elif menu == "📋  Records":
                             record.amount = row["Amount"]
                             record.category = row["Category"]
                             record.date = str(row["Date"])
-                            record.description = row["Description"] # Saves any edits to description
+                            record.description = row["Description"]
                     session.commit()
                     st.toast("Expenses Updated!", icon="✅")
                     st.rerun()
@@ -968,13 +1177,11 @@ elif menu == "📋  Records":
                     st.toast("Expense Deleted.")
                     st.rerun()
 
-    # --- TAB 2: INCOME ---
     with tab2:
         incomes = session.query(Income).all()
         if not incomes:
             st.info("No income records found.")
         else:
-            # Create a list for the editor
             inc_data = []
             for i in incomes:
                 inc_data.append({
@@ -983,13 +1190,12 @@ elif menu == "📋  Records":
                     "Amount": float(i.amount),
                     "Date": i.date
                 })
-            
+
             df_inc = pd.DataFrame(inc_data)
 
             st.write("### Income List")
             st.caption("Double-click any cell to edit details.")
 
-            # Editable table for Income
             edited_inc_df = st.data_editor(df_inc, key="inc_edit_table", hide_index=True, use_container_width=True)
 
             col1_i, col2_i = st.columns(2)
