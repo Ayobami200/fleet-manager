@@ -292,6 +292,7 @@ with st.sidebar:
         "💸  Add Expense",
         "💰  Add Income",
         "📋  Records",
+        "⚡  Auto Deductions",
     ])
 
     # Fleet quick stats in sidebar
@@ -1219,6 +1220,208 @@ elif menu == "📋  Records":
                     session.commit()
                     st.toast("Income Record Deleted.")
                     st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: AUTO DEDUCTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+elif menu == "⚡  Auto Deductions":
+    page_header("Auto Deductions", "Automatically calculate and record Tithe, Manager & Analyst salaries")
+
+    # ── Constants ─────────────────────────────────────────────────────────────
+    EXEMPT_VEHICLE_ID = 3          # 4RA — church vehicle, always excluded
+    TITHE_RATE        = 0.10       # 10%
+    MANAGER_RATE      = 0.15       # 15%
+    ANALYST_RATE      = 0.02       # 2%
+
+    vehicles  = session.query(Vehicle).all()
+    expenses  = session.query(Expense).all()
+    incomes   = session.query(Income).all()
+
+    # ── Build cycle list from all income + expense dates ──────────────────────
+    all_dates = []
+    for e in expenses:
+        try:
+            all_dates.append(datetime.strptime(str(e.date), "%Y-%m-%d").date())
+        except:
+            pass
+    for i in incomes:
+        try:
+            all_dates.append(datetime.strptime(str(i.date), "%Y-%m-%d").date())
+        except:
+            pass
+
+    if not all_dates:
+        st.info("No income or expense records found. Add income first before running auto deductions.")
+        st.stop()
+
+    def get_cycle_start_date(d):
+        if d.day >= 20:
+            return d.replace(day=20)
+        else:
+            first = d.replace(day=1)
+            prev  = first - timedelta(days=1)
+            return prev.replace(day=20)
+
+    earliest    = min(all_dates)
+    cycle_starts = []
+    cursor      = get_cycle_start_date(earliest)
+    today_cycle = get_current_cycle_start()
+    while cursor <= today_cycle:
+        cycle_starts.append(cursor)
+        next_month_first = (cursor.replace(day=1) + timedelta(days=32)).replace(day=1)
+        cursor = next_month_first.replace(day=20)
+
+    def cycle_label(start):
+        next_start_first = (start.replace(day=1) + timedelta(days=32)).replace(day=1)
+        end = next_start_first.replace(day=20) - timedelta(days=1)
+        return f"{start.strftime('%b %d')} – {end.strftime('%b %d, %Y')}"
+
+    cycle_map = {cycle_label(s): s for s in cycle_starts}
+
+    # ── Cycle selector ────────────────────────────────────────────────────────
+    st.markdown("""<p style="font-size:0.7rem;font-weight:700;color:#2563EB;
+                letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.5rem;">
+                Select Business Cycle</p>""", unsafe_allow_html=True)
+
+    selected_label = st.selectbox(
+        "Choose cycle",
+        options=list(reversed(list(cycle_map.keys()))),
+        label_visibility="collapsed"
+    )
+
+    selected_start = cycle_map[selected_label]
+    next_cs_first  = (selected_start.replace(day=1) + timedelta(days=32)).replace(day=1)
+    selected_end   = next_cs_first.replace(day=20) - timedelta(days=1)
+    # Income paid ON the 20th belongs to the closing cycle
+    income_end     = next_cs_first.replace(day=20)  # inclusive of payment day
+
+    st.markdown(
+        f'<p style="font-size:0.78rem;color:#64748B;margin:0.25rem 0 1.25rem;">'
+        f'📅 Cycle: <strong>{selected_start.strftime("%b %d, %Y")}</strong> → '
+        f'<strong>{selected_end.strftime("%b %d, %Y")}</strong> '
+        f'(income collected on <strong>{income_end.strftime("%b %d, %Y")}</strong>)</p>',
+        unsafe_allow_html=True
+    )
+
+    # ── Calculate per-vehicle income for this cycle ───────────────────────────
+    def in_cycle_income_auto(d):
+        try:
+            parsed = datetime.strptime(str(d), "%Y-%m-%d").date()
+            # Payment on the 20th belongs to the cycle that just closed
+            if parsed.day > 20:
+                cycle_s = parsed.replace(day=20)
+            else:
+                first = parsed.replace(day=1)
+                prev  = first - timedelta(days=1)
+                cycle_s = prev.replace(day=20)
+            return cycle_s == selected_start
+        except:
+            return False
+
+    cycle_incomes = [i for i in incomes if in_cycle_income_auto(i.date)]
+
+    # Group income by vehicle, skip exempt vehicle
+    vehicle_income = {}
+    for i in cycle_incomes:
+        if i.vehicle_id == EXEMPT_VEHICLE_ID:
+            continue
+        vehicle_income[i.vehicle_id] = vehicle_income.get(i.vehicle_id, 0) + i.amount
+
+    if not vehicle_income:
+        st.warning(f"No income recorded for any vehicle in the **{selected_label}** cycle. "
+                   f"Record income first before running deductions.")
+        st.stop()
+
+    # ── Preview table ─────────────────────────────────────────────────────────
+    vmap = {v.id: v.name for v in vehicles}
+
+    preview_rows = []
+    total_tithe = total_manager = total_analyst = 0
+
+    for vid, income_amt in vehicle_income.items():
+        tithe   = round(income_amt * TITHE_RATE)
+        manager = round(income_amt * MANAGER_RATE)
+        analyst = round(income_amt * ANALYST_RATE)
+        total_tithe   += tithe
+        total_manager += manager
+        total_analyst += analyst
+        preview_rows.append({
+            "Vehicle":          vmap.get(vid, f"ID {vid}"),
+            "Cycle Income":     fmt(income_amt),
+            "Tithe (10%)":      fmt(tithe),
+            "Manager (15%)":    fmt(manager),
+            "Analyst (2%)":     fmt(analyst),
+            "Total Deductions": fmt(tithe + manager + analyst),
+        })
+
+    st.markdown("""<p style="font-family:'Syne',sans-serif;font-weight:700;font-size:1rem;
+                color:#0A1628;margin-bottom:0.75rem;">Deduction Preview</p>""",
+                unsafe_allow_html=True)
+    st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
+
+    # ── Totals ────────────────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    t1, t2, t3, t4 = st.columns(4)
+    t1.metric("Total Tithe",           fmt(total_tithe))
+    t2.metric("Total Manager Salary",  fmt(total_manager))
+    t3.metric("Total Analyst Salary",  fmt(total_analyst))
+    t4.metric("Grand Total Deductions",fmt(total_tithe + total_manager + total_analyst))
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Check if already posted ───────────────────────────────────────────────
+    # Look for any auto-deduction expenses already in this cycle
+    def in_cycle_expense_check(d):
+        try:
+            parsed = datetime.strptime(str(d), "%Y-%m-%d").date()
+            return selected_start <= parsed <= selected_end
+        except:
+            return False
+
+    existing_auto = [
+        e for e in expenses
+        if in_cycle_expense_check(e.date)
+        and e.category in ("Other", "Salary")
+        and e.description in ("Tithe", "Manager's Salary", "Data Analyst")
+    ]
+
+    if existing_auto:
+        st.warning(f"⚠️ Auto deductions appear to have already been posted for **{selected_label}** "
+                   f"({len(existing_auto)} entries found). Running again will create duplicates. "
+                   f"Delete the existing ones from Records first if you need to repost.")
+    else:
+        # ── Deduction date = payment day (20th of closing month) ──────────────
+        deduction_date = str(income_end)
+
+        if st.button("⚡ Post All Deductions to Expenses", type="primary"):
+            count = 0
+            for vid, income_amt in vehicle_income.items():
+                tithe   = round(income_amt * TITHE_RATE)
+                manager = round(income_amt * MANAGER_RATE)
+                analyst = round(income_amt * ANALYST_RATE)
+
+                session.add(Expense(
+                    vehicle_id=vid, amount=tithe,
+                    category="Other", description="Tithe",
+                    date=deduction_date, receipt_path=""
+                ))
+                session.add(Expense(
+                    vehicle_id=vid, amount=manager,
+                    category="Salary", description="Manager's Salary",
+                    date=deduction_date, receipt_path=""
+                ))
+                session.add(Expense(
+                    vehicle_id=vid, amount=analyst,
+                    category="Salary", description="Data Analyst",
+                    date=deduction_date, receipt_path=""
+                ))
+                count += 3
+
+            session.commit()
+            st.toast(f"✅ {count} deduction entries posted to expenses!", icon="⚡")
+            st.balloons()
+            import time; time.sleep(1); st.rerun()
 
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
