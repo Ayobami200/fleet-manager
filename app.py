@@ -1392,7 +1392,7 @@ elif menu == "⚡  Auto Deductions":
                    f"Delete the existing ones from Records first if you need to repost.")
     else:
         # ── Deduction date = payment day (20th of closing month) ──────────────
-        deduction_date = str(income_end)
+        deduction_date = str(selected_end)  # 19th — last day of closing cycle
 
         if st.button("⚡ Post All Deductions to Expenses", type="primary"):
             count = 0
